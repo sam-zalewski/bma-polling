@@ -1,0 +1,1667 @@
+---
+title: "Zalewski-Bayesian-Elections"
+author: "Sam Zalewski"
+date: "2024-05-30"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Gender Stratifaction Model
+
+
+#### Prepare Gender Stratifaction Data
+
+```{r}
+election_data_gender <- read.csv("C:/Users/Sam/Documents/Spring 24/bayesian analysis/finalproject/Morningconsult_gender_csv2.csv")
+
+election_data_gender$pop <- c(3562200,3627500,5117300,5492500, 4851500,4973100,1561600,1563800,4997400,5342800,6166400,6378000,2886100,2871500,0,0,0)
+
+
+poll_biden_gender <- election_data_gender$N.Biden
+poll_trump_gender <- election_data_gender$N.Trump
+poll_rfk_gender <- election_data_gender$N.RFK
+poll_other_gender <- election_data_gender$Total - election_data_gender$N.RFK - election_data_gender$N.Trump - election_data_gender$N.Biden
+
+counts_gender <- as.matrix(cbind(poll_biden_gender, poll_trump_gender, poll_rfk_gender, poll_other_gender)[1:14,])
+
+
+turnout_data <- election_data_gender[1:14, c("Voted.2020", "Voted.2016", "Voted.2012", "Voted.2008", "Voted.2004", "Voted.2000")]/100
+
+national_turnouts  <- as.vector(unlist(election_data_gender[17, c(10, 12, 14, 16, 18, 20)] / 100))
+
+
+```
+
+
+
+
+#### line plots
+
+```{r}
+library(RColorBrewer)
+
+library(ggplot2)
+library(tidyr)
+
+
+gender_plot <- cbind(election_data_gender[1:14,1:2],turnout_data)
+
+gender_plot <- gender_plot[5:12,]
+
+colnames(gender_plot) <- c("State", "Gender", 2020, 2016, 2012, 2008, 2004, 2000)
+
+colors <- brewer.pal(2, "Set1")
+
+
+long_data <- pivot_longer(gender_plot, cols = -c(State, Gender), names_to = "Year", values_to = "Turnout")
+
+long_data$Year <- sub("Voted_", "", long_data$Year)
+
+plot <- ggplot(long_data, aes(x = Year, y = Turnout, group = Gender, color = Gender, linetype = Gender)) +
+  geom_line(size = 1.2) +
+  scale_color_manual(values = colors) +
+  scale_linetype_manual(values = c("Male" = "solid", "Female" = "dashed")) +
+  labs(x = "Year", y = "Voter Turnout (%)") +
+  facet_wrap(~ State) +
+  theme_minimal() +
+  theme(legend.title = element_blank(),
+        strip.text = element_text(size = 12, face = "bold"))
+
+print(plot)
+
+```
+
+
+### Gender Stratifaction Model
+
+
+```{r}
+
+#options(mc.cores = parallel::detectCores())
+
+
+
+
+stan_data_g <- list(
+  pop_G = election_data_gender$pop[1:14],
+  counts_gender = counts_gender,
+  N_G = 14,
+  turnout_gender = turnout_data, 
+  national_turnouts = national_turnouts,
+  Gender = as.integer(factor(election_data_gender$Gender[1:14], levels = c("Male", "Female"))),
+  State_G = as.integer(factor(election_data_gender$State[1:14])),
+  S = length(unique(election_data_gender$State[1:14])),
+  G = 2,
+  K = 4,
+  Y = 6  # num of years
+)
+
+
+
+stan_model_g <- 
+"
+data {
+  int<lower=0> N_G;                    // num of data points for gender census data
+  matrix[N_G, 6] turnout_gender;        // Turnout proportions for gender
+  vector[6] national_turnouts;
+  int<lower=1, upper=2> Gender[N_G];
+  int<lower=1> State_G[N_G];            //  state data for gender data
+  int<lower=1> K;                    // num of categories
+  vector[N_G] pop_G;                // population of each demographic
+  int S;                                // num of states
+  int G;                             // num of genders
+  int Y;                             // num of years
+  int<lower=0> counts_gender[N_G, K]; 
+}
+
+parameters {
+  vector[2] gender_effect; //adjustments for each type of effect for each year
+  vector[S] state_effect;  
+  real<lower=0, upper=1> turnout2024;
+}
+
+transformed parameters {
+  vector[N_G] adjusted_turnout_gender;
+
+  for (i in 1:N_G) {
+    real logit_turnout_gender = logit(turnout2024) + gender_effect[Gender[i]] + state_effect[State_G[i]];
+    adjusted_turnout_gender[i] = inv_logit(logit_turnout_gender);
+  }
+  
+  
+}
+
+model {
+  // Apply priors
+  gender_effect ~ normal(0, 1);  // little information
+  state_effect ~ normal(0, 1);  
+  turnout2024 ~ beta(100, 65); 
+
+  for (i in 1:N_G) {    //for gender data
+    for (y in 1:Y) {
+      real logit_turnout_gender = logit(national_turnouts[y]) + gender_effect[Gender[i]] + state_effect[State_G[i]];
+      real predicted_turnout_gender = inv_logit(logit_turnout_gender);
+      turnout_gender[i, y] ~ normal(predicted_turnout_gender, 0.5); 
+    }
+  }
+  
+
+  
+}
+
+generated quantities {
+
+  matrix[N_G, Y] residuals; 
+  
+  for (i in 1:N_G) {
+    for (y in 1:Y) {
+      real predicted_turnout_gender = inv_logit(logit(turnout2024) + gender_effect[Gender[i]] + state_effect[State_G[i]]);
+      residuals[i, y] = turnout_gender[i, y] - predicted_turnout_gender;
+    }
+  }
+  
+
+
+
+  simplex[K] proportions[N_G];
+  vector[K] alpha[N_G];
+  for (i in 1:N_G) {
+    for (k in 1:K) {
+      alpha[i][k] = counts_gender[i, k] + 1; 
+    }
+    proportions[i] = dirichlet_rng(alpha[i]);
+  }
+
+  vector[N_G] votes_biden;
+  vector[N_G] votes_trump;
+  vector[N_G] votes_rfk;
+  vector[N_G] votes_other;
+  vector[S] total_votes_biden = rep_vector(0, S);
+  vector[S] total_votes_trump = rep_vector(0, S);
+  vector[S] total_votes_rfk = rep_vector(0, S);
+  vector[S] total_votes_other = rep_vector(0, S);
+
+  for (i in 1:N_G) {
+
+    votes_biden[i] = adjusted_turnout_gender[i] * proportions[i][1] * pop_G[i];
+    votes_trump[i] = adjusted_turnout_gender[i] * proportions[i][2] * pop_G[i];
+    votes_rfk[i] = adjusted_turnout_gender[i] * proportions[i][3] * pop_G[i];
+    votes_other[i] = adjusted_turnout_gender[i] * proportions[i][4] * pop_G[i];
+
+
+    total_votes_biden[State_G[i]] += votes_biden[i];
+    total_votes_trump[State_G[i]] += votes_trump[i];
+    total_votes_rfk[State_G[i]] += votes_rfk[i];
+    total_votes_other[State_G[i]] += votes_other[i];
+  }
+}
+"
+
+
+
+
+
+library(rstan)
+
+fit_gender <- stan(model_code = stan_model_g, data = stan_data_g, iter = 4000, chains = 4, control = list(max_treedepth = 10))
+
+results_gender <- rstan::extract(fit_gender)
+```
+#### Model Diagnostics
+
+```{r}
+library(bayesplot)
+mcmc_trace(fit_gender, pars = c("gender_effect[1]", "gender_effect[2]","state_effect[1]","state_effect[2]"))
+```
+
+
+
+```{r}
+
+residuals <- results_gender$residuals
+
+summary(residuals)
+
+
+```
+
+
+
+# Race Stratifaction Data
+
+#### Prepare Data
+
+```{r}
+
+library(dplyr)
+
+
+election_data_race <- read.csv("C:/Users/Sam/Documents/Spring 24/bayesian analysis/finalproject/Morningconsult_race.csv")
+
+
+
+
+poll_biden_race <- election_data_race$N.Biden
+poll_trump_race <- election_data_race$N.Trump
+poll_rfk_race <- election_data_race$N.RFK
+poll_other_race <- election_data_race$Total - election_data_race$N.RFK - election_data_race$N.Trump - election_data_race$N.Biden
+
+counts_race <- as.matrix(cbind(poll_biden_race, poll_trump_race, poll_rfk_race, poll_other_race)[1:28,])
+
+
+
+turnout_data_race <- election_data_race[1:28, c("Voted.2020", "Voted.2016", "Voted.2012", "Voted.2008", "Voted.2004", "Voted.2000")]
+
+
+turnout_data_race[] <- lapply(turnout_data_race, function(x) {
+  x <- as.character(x)
+  x[x == "B"] <- NA  # Replace 'B' with NA
+  as.numeric(x)  # Convert characters to numeric, automatically converting non-numeric to NA
+})
+
+turnout_data_race[] <- lapply(turnout_data_race, function(x) x / 100)
+
+
+
+```
+
+
+
+#### line plots
+```{r}
+
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+
+
+race_plot <- cbind(election_data_race[1:28,1:2], turnout_data_race)
+
+race_plot <- race_plot[9:24,]
+
+colnames(race_plot) <- c("State", "Race", 2020, 2016, 2012, 2008, 2004, 2000)
+
+
+long_data <- pivot_longer(race_plot, cols = -c(State, Race), names_to = "Year", values_to = "Turnout")
+
+colors <- brewer.pal(4, "Set1")
+
+
+plot <- ggplot(long_data, aes(x = Year, y = Turnout, group = Race, color = Race, linetype = Race)) +
+  geom_line(size = 1.2) +
+  scale_color_manual(values = colors) +
+  scale_linetype_manual(values = c("White-NH" = "solid", "Black-NH" = "dashed", "Hispanic" = "dotted", "Asian/Other" = "dotdash")) +
+  labs(x = "Year", y = "Voter Turnout (%)") +
+  facet_wrap(~ State) +
+  theme_minimal() +
+  theme(legend.title = element_blank(),
+        strip.text = element_text(size = 12, face = "bold"))
+
+# Display the plot
+print(plot)
+
+```
+
+
+#### Race Stratifaction Model
+
+
+```{r}
+
+stan_data_r <- list(
+  pop_R = election_data_race$pop[1:28],
+  counts_race = counts_race,
+  N_R = 28,
+  turnout_race = turnout_data_race, 
+  national_turnouts = national_turnouts,
+  Race = as.integer(factor(election_data_race$Race[1:28])),
+  State_R = as.integer(factor(election_data_race$State[1:28])),
+  S = length(unique(election_data_race$State[1:28])),
+  R = 4,
+  K = 4,
+  Y = 6  # num of years
+)
+
+
+stan_model_r <- 
+"
+data {
+  int<lower=0> N_R;                       //number of data points for race data
+  matrix[N_R, 6] turnout_race;        // and for race
+  vector[6] national_turnouts;
+  int<lower=1> Race[N_R];
+  int<lower=1> State_R[N_R];             //state data for gender data
+  int<lower=1> K;                    // num of categories
+  vector[N_R] pop_R;                // population of each demographic
+  int S;                                // num of states
+  int R;                             // num of genders
+  int Y;                             // num of years
+  int<lower=0> counts_race[N_R, K]; 
+}
+
+parameters {
+  vector[S] state_effect;  //adjustments for each type of effect for each year
+  vector[4] race_effect;   
+  real<lower=0, upper=1> turnout2024;
+}
+
+transformed parameters {
+  vector[N_R] adjusted_turnout_race; 
+
+  
+  for (i in 1:N_R) {
+    real logit_turnout_race = logit(turnout2024) +race_effect[Race[i]] + state_effect[State_R[i]];
+    adjusted_turnout_race[i] = inv_logit(logit_turnout_race);
+  }
+  
+}
+
+model {
+  // Apply priors
+  state_effect ~ normal(0, 1);  
+  race_effect ~ normal(0, 1); 
+  turnout2024 ~ beta(100, 65); 
+
+  for (i in 1:N_R) {    //for race data
+    for (y in 1:Y) {
+      real logit_turnout_race = logit(national_turnouts[y]) + race_effect[Race[i]]+ state_effect[State_R[i]];
+      real predicted_turnout_race = inv_logit(logit_turnout_race);
+      turnout_race[i, y] ~ normal(predicted_turnout_race,  0.5); 
+    }
+  }
+  
+}
+
+generated quantities {
+
+  matrix[N_R, Y] residuals; 
+  
+  for (i in 1:N_R) {
+    for (y in 1:Y) {
+      real predicted_turnout_race = inv_logit(logit(turnout2024) +race_effect[Race[i]] + state_effect[State_R[i]]);
+      residuals[i, y] = turnout_race[i, y] - predicted_turnout_race;
+    }
+  }
+  
+
+
+
+  simplex[K] proportions[N_R];
+  vector[K] alpha[N_R];
+  for (i in 1:N_R) {
+    for (k in 1:K) {
+      alpha[i][k] = counts_race[i, k] + 1; 
+    }
+    proportions[i] = dirichlet_rng(alpha[i]);
+  }
+
+  vector[N_R] votes_biden;
+  vector[N_R] votes_trump;
+  vector[N_R] votes_rfk;
+  vector[N_R] votes_other;
+  vector[S] total_votes_biden = rep_vector(0, S);
+  vector[S] total_votes_trump = rep_vector(0, S);
+  vector[S] total_votes_rfk = rep_vector(0, S);
+  vector[S] total_votes_other = rep_vector(0, S);
+
+  for (i in 1:N_R) {
+
+    votes_biden[i] = adjusted_turnout_race[i] * proportions[i][1] * pop_R[i];
+    votes_trump[i] = adjusted_turnout_race[i] * proportions[i][2] * pop_R[i];
+    votes_rfk[i] = adjusted_turnout_race[i] * proportions[i][3] * pop_R[i];
+    votes_other[i] = adjusted_turnout_race[i] * proportions[i][4] * pop_R[i];
+
+
+    total_votes_biden[State_R[i]] += votes_biden[i];
+    total_votes_trump[State_R[i]] += votes_trump[i];
+    total_votes_rfk[State_R[i]] += votes_rfk[i];
+    total_votes_other[State_R[i]] += votes_other[i];
+  }
+}
+"
+
+library(rstan)
+
+fit_race <- stan(model_code = stan_model_r, data = stan_data_r, iter = 4000, chains = 4, control = list(max_treedepth = 10))
+
+results_race <- rstan::extract(fit_race)
+
+```
+
+#### Model Diagnostics
+
+
+```{r}
+library(bayesplot)
+mcmc_trace(fit_race, pars = c("race_effect[1]", "race_effect[2]","state_effect[3]","state_effect[4]"))
+```
+
+
+```{r}
+
+residuals <- results_race$residuals
+
+summary(residuals)
+
+
+```
+```{r}
+
+
+residuals <- results_race$residuals
+
+plot(as.vector(residuals), type = 'o', pch = 20, col = 'red', main = "Plot of Residuals",
+     xlab = "Index", ylab = "Residuals")
+abline(h = 0, col = 'blue')
+
+
+```
+
+
+
+
+# Age Stratifaction Model
+
+#### Prepare Age Stratifaction Data
+
+
+This data is much more challenging to analyze because of conflicting forms of stratification. In the US census, we 
+
+```{r}
+
+election_data_age <- read.csv("C:/Users/Sam/Documents/Spring 24/bayesian analysis/finalproject/Morningconsult_age.csv")
+
+
+
+age_turnout <- election_data_age[1:35,9:35]
+age_polls <- election_data_age[,1:6]
+
+
+aggregate_ages_old <- function(data, year) {
+
+  voted_col <- paste("Voted.", year, sep = "")
+  percent_col <- paste("percent", year, sep = "")
+  total_col <- paste("total", year, sep = "")
+  
+  data[[total_col]] <- data[[voted_col]] / (data[[percent_col]] / 100)
+    data$Age_Bucket <- ifelse(data$X.3 %in% c("Group 1", "Group 2"), "18-44",
+                            ifelse(data$X.3 == "Group 3", "45-64",
+                                   ifelse(data$X.3 %in% c("Group 4", "Group 5"), "65+", NA)))
+  
+
+  aggregated_data <- aggregate(cbind(Total_Voted = data[[voted_col]], Total_Population = data[[total_col]]) ~ X.2 + Age_Bucket, data, sum)
+  
+  aggregated_data$Turnout_Percentage <- (aggregated_data$Total_Voted / aggregated_data$Total_Population) * 100
+  
+  return(aggregated_data)
+}
+
+
+aggregate_ages_new <- function(data, year) {
+
+  voted_col <- paste("Voted.", year, sep = "")
+  percent_col <- paste("percent", year, sep = "")
+  total_col <- paste("total", year, sep = "")
+  
+  data[[total_col]] <- data[[voted_col]] / (data[[percent_col]] / 100)
+    data$Age_Bucket <- ifelse(data$X.3 %in% c("Group 1", "Group 2", "Group 3"), "18-44",
+                            ifelse(data$X.3 == "Group 4", "45-64",
+                                   ifelse(data$X.3 %in% c("Group 5"), "65+", NA)))
+  
+
+  aggregated_data <- aggregate(cbind(Total_Voted = data[[voted_col]], Total_Population = data[[total_col]]) ~ X.2 + Age_Bucket, data, sum)
+  
+  aggregated_data$Turnout_Percentage <- (aggregated_data$Total_Voted / aggregated_data$Total_Population) * 100
+  
+  return(aggregated_data)
+}
+
+
+age_turnout_2020 <- aggregate_ages_new(age_turnout, 2020)
+age_turnout_2016 <- aggregate_ages_new(age_turnout, 2016)
+age_turnout_2012 <- aggregate_ages_new(age_turnout, 2012)
+age_turnout_2008 <- aggregate_ages_old(age_turnout, 2008)
+age_turnout_2004 <- aggregate_ages_old(age_turnout, 2004)
+age_turnout_2000 <- aggregate_ages_old(age_turnout, 2000)
+
+
+
+
+all_age_turnouts <- cbind(age_turnout_2020[,1:2], 
+                          age_turnout_2020$Turnout_Percentage,
+                          age_turnout_2016$Turnout_Percentage,
+                          age_turnout_2012$Turnout_Percentage,
+                          age_turnout_2008$Turnout_Percentage,
+                          age_turnout_2004$Turnout_Percentage,
+                          age_turnout_2000$Turnout_Percentage)
+colnames(all_age_turnouts) <- c("State","Ages","2020","2016","2012","2008","2004","2000")
+
+
+
+
+age_polls <- na.omit(age_polls) 
+
+age_polls$Age_Bucket <- ifelse(age_polls$Age %in% c("18-34", "35-44"), "18-44",
+                               ifelse(age_polls$Age == "45-64", "45-64",
+                                      ifelse(age_polls$Age == "65+", "65+", NA)))
+
+polling_data_aggregated <- aggregate(cbind(N.Biden, N.Trump, N.RFK, Total) ~ State + Age_Bucket, age_polls, sum)
+
+polling_data_aggregated$Total <- polling_data_aggregated$Total - polling_data_aggregated$N.Biden -polling_data_aggregated$N.Trump - polling_data_aggregated$N.RFK
+
+
+
+
+polling_data_aggregated <- polling_data_aggregated[order(polling_data_aggregated$State), ]
+all_age_turnouts <- all_age_turnouts[order(all_age_turnouts$State), ]
+age_turnout_2020 <- age_turnout_2020[order(age_turnout_2020$X.2), ]
+
+```
+
+
+
+
+#### line plots
+```{r}
+
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+
+
+
+age_plot <- cbind(all_age_turnouts[,1:2], all_age_turnouts[,3:8]/100)
+
+age_plot <- age_plot[7:18,]
+
+colnames(age_plot) <- c("State", "Ages", "2020", "2016", "2012", "2008", "2004", "2000")
+
+
+colors <- brewer.pal(3, "Set1")
+
+
+long_data <- pivot_longer(age_plot, cols = -c(State, Ages), names_to = "Year", values_to = "Turnout")
+
+
+plot <- ggplot(long_data, aes(x = Year, y = Turnout, group = Ages, color = Ages, linetype = Ages)) +
+  geom_line(size = 1.2) +
+  scale_color_manual(values = colors) +
+  scale_linetype_manual(values = c("18-44" = "solid", "45-64" = "longdash", "65+" = "dotdash")) +
+  labs(x = "Year", y = "Voter Turnout (%)") +
+  facet_wrap(~ State) +
+  theme_minimal() +
+  theme(legend.title = element_blank(),
+        strip.text = element_text(size = 12, face = "bold"))
+
+
+print(plot)
+
+```
+
+
+
+#### Age Stratifaction Model
+
+
+```{r}
+
+
+stan_data_a <- list(
+  pop_A = age_turnout_2020$Total_Population,
+  counts_age = polling_data_aggregated[3:6],
+  N_A = 21,
+  turnout_age = (all_age_turnouts[,3:8]/100), 
+  national_turnouts = national_turnouts,
+  Age = as.integer(factor(polling_data_aggregated$Age_Bucket[1:21])),
+  State_A = as.integer(factor(polling_data_aggregated$State[1:21])),
+  S = length(unique(all_age_turnouts$State[1:21])),
+  A = 3,
+  K = 4, 
+  Y = 6  # num of years
+)
+
+
+stan_model_a <- 
+"
+data {
+  int<lower=0> N_A;                       //number of data points for age data
+  matrix[N_A, 6] turnout_age;        
+  vector[6] national_turnouts;
+  int<lower=1> Age[N_A];
+  int<lower=1> State_A[N_A];             //state data for age data
+  int<lower=1> K;                    // num of categories
+  vector[N_A] pop_A;                // population of each demographic
+  int S;                                // num of states
+  int A;                             // num of age buckets
+  int Y;                             // num of years
+  int<lower=0> counts_age[N_A, K]; 
+}
+
+parameters {
+  vector[S] state_effect;  //adjustments for each type of effect for each year
+  vector[3] age_effect;   
+  real<lower=0, upper=1> turnout2024;
+}
+
+transformed parameters {
+  vector[N_A] adjusted_turnout_age; 
+
+  
+  for (i in 1:N_A) {
+    real logit_turnout_age = logit(turnout2024) + age_effect[Age[i]] + state_effect[State_A[i]];
+    adjusted_turnout_age[i] = inv_logit(logit_turnout_age);
+  }
+  
+}
+
+model {
+  // Apply priors
+  state_effect ~ normal(0, 1);  
+  age_effect ~ normal(0, 1); 
+  turnout2024 ~ beta(100, 65); 
+
+  for (i in 1:N_A) {    //for race data
+    for (y in 1:Y) {
+      real logit_turnout_age = logit(national_turnouts[y]) + age_effect[Age[i]] + state_effect[State_A[i]];
+      real predicted_turnout_age = inv_logit(logit_turnout_age);
+      turnout_age[i, y] ~ normal(predicted_turnout_age, 0.5); 
+      
+    }
+  }
+  
+}
+
+generated quantities {
+  matrix[N_A, Y] residuals; 
+  
+  for (i in 1:N_A) {
+    for (y in 1:Y) {
+      real predicted_turnout_age = inv_logit(logit(turnout2024) + age_effect[Age[i]] + state_effect[State_A[i]]);
+      residuals[i, y] = turnout_age[i, y] - predicted_turnout_age;
+    }
+  }
+  
+  simplex[K] proportions[N_A];
+  vector[K] alpha[N_A];
+  for (i in 1:N_A) {
+    for (k in 1:K) {
+      alpha[i][k] = counts_age[i, k] + 1; 
+    }
+    proportions[i] = dirichlet_rng(alpha[i]);
+  }
+
+  vector[N_A] votes_biden;
+  vector[N_A] votes_trump;
+  vector[N_A] votes_rfk;
+  vector[N_A] votes_other;
+  vector[S] total_votes_biden = rep_vector(0, S);
+  vector[S] total_votes_trump = rep_vector(0, S);
+  vector[S] total_votes_rfk = rep_vector(0, S);
+  vector[S] total_votes_other = rep_vector(0, S);
+
+  for (i in 1:N_A) {
+
+    votes_biden[i] = adjusted_turnout_age[i] * proportions[i][1] * pop_A[i];
+    votes_trump[i] = adjusted_turnout_age[i] * proportions[i][2] * pop_A[i];
+    votes_rfk[i] = adjusted_turnout_age[i] * proportions[i][3] * pop_A[i];
+    votes_other[i] = adjusted_turnout_age[i] * proportions[i][4] * pop_A[i];
+
+
+    total_votes_biden[State_A[i]] += votes_biden[i];
+    total_votes_trump[State_A[i]] += votes_trump[i];
+    total_votes_rfk[State_A[i]] += votes_rfk[i];
+    total_votes_other[State_A[i]] += votes_other[i];
+  }
+}
+"
+
+library(rstan)
+
+fit_age <- stan(model_code = stan_model_a, data = stan_data_a, iter = 4000, chains = 4,control = list(max_treedepth = 10))
+
+results_age <- rstan::extract(fit_age)
+
+```
+#### Model Diagnostics
+
+```{r}
+library(bayesplot)
+mcmc_trace(fit_age, pars = c("age_effect[1]", "age_effect[2]","state_effect[5]","state_effect[6]"))
+```
+
+```{r}
+
+residuals <- results_age$residuals
+
+plot(as.vector(residuals), type = 'o', pch = 20, col = 'red', main = "Plot of Residuals",
+     xlab = "Index", ylab = "Residuals")
+abline(h = 0, col = 'blue')
+
+
+```
+
+
+```{r}
+
+residuals <- results_age$residuals
+
+summary(residuals)
+
+
+```
+
+
+
+
+Standardizing Stratified Sample Vote Totals
+
+```{r}
+
+sum(election_data_gender$pop)
+sum(election_data_race$pop[1:28])
+sum(age_turnout_2020$Total_Population)
+
+```
+
+
+
+# Comparing Stratification Estimates
+
+#### Arizona
+
+```{r}
+
+library(ggplot2)
+library(ggpubr)
+
+
+scaler=1000000
+
+ratio_race <- sum(election_data_gender$pop)/sum(election_data_race$pop[1:28])
+ratio_age <- sum(election_data_gender$pop)/sum(age_turnout_2020$Total_Population)
+
+
+biden_votes_gender <- results_gender$total_votes_biden/scaler
+biden_votes_race <- results_race$total_votes_biden * ratio_race /scaler
+biden_votes_age <- results_age$total_votes_biden * ratio_age /scaler
+
+trump_votes_gender <- results_gender$total_votes_trump/scaler
+trump_votes_race <- results_race$total_votes_trump * ratio_race/scaler
+trump_votes_age <- results_age$total_votes_trump * ratio_age/scaler
+
+rfk_votes_gender <- results_gender$total_votes_rfk/scaler
+rfk_votes_race <- results_race$total_votes_rfk * ratio_race/scaler
+rfk_votes_age <- results_age$total_votes_rfk * ratio_age/scaler
+
+other_votes_gender <- results_gender$total_votes_other/scaler
+other_votes_race <- results_race$total_votes_other * ratio_race/scaler
+other_votes_age <- results_age$total_votes_other * ratio_age/scaler
+
+
+
+
+
+
+state_num <- 1
+
+arizona_biden_g <- biden_votes_gender[, state_num] 
+arizona_biden_r <- biden_votes_race[, state_num]  
+arizona_biden_a <- biden_votes_age[, state_num]  
+
+biden_arizona <- data.frame(
+  Votes = c(arizona_biden_g, arizona_biden_r,arizona_biden_a),
+  Method = rep(c("Gender", "Race", "Age"), each = length(arizona_biden_g))
+)
+
+plot_biden <- ggplot(biden_arizona, aes(x = Votes, fill = Method)) +
+  geom_density(alpha = 0.4) +
+  labs(title = "Biden Votes, Arizona",
+       x = "Number of Votes (millions)",
+       y = "Density") +
+  scale_fill_manual(values = c("#A9D3FF", "#459FFF","#003E81")) +
+  theme_minimal()
+
+
+
+
+
+
+arizona_trump_g <- trump_votes_gender[, state_num] 
+arizona_trump_r <- trump_votes_race[, state_num]  
+arizona_trump_a <- trump_votes_age[, state_num]  
+
+trump_arizona <- data.frame(
+  Votes = c(arizona_trump_g, arizona_trump_r,arizona_trump_a),
+  Method = rep(c("Gender", "Race", "Age"), each = length(arizona_trump_g))
+)
+
+plot_trump <- ggplot(trump_arizona, aes(x = Votes, fill = Method)) +
+  geom_density(alpha = 0.4) +
+  labs(title = "Trump Votes, Arizona",
+       x = "Number of Votes (millions)",
+       y = "Density") +
+  scale_fill_manual(values = c("#FFABB7", "#FF3250","#7E0013")) +
+  theme_minimal()
+
+
+
+arizona_rfk_g <- rfk_votes_gender[, state_num] 
+arizona_rfk_r <- rfk_votes_race[, state_num]  
+arizona_rfk_a <- rfk_votes_age[, state_num]  
+
+rfk_arizona <- data.frame(
+  Votes = c(arizona_rfk_g, arizona_rfk_r,arizona_rfk_a),
+  Method = rep(c("Gender", "Race", "Age"), each = length(arizona_rfk_g))
+)
+
+plot_rfk <- ggplot(rfk_arizona, aes(x = Votes, fill = Method)) +
+  geom_density(alpha = 0.4) +
+  labs(title = "RFK Votes, Arizona",
+       x = "Number of Votes (millions)",
+       y = "Density") +
+  scale_fill_manual(values = c("#FDFF74", "#FFE828","#DE9503")) +
+  theme_minimal()
+
+
+
+
+arizona_other_g <- other_votes_gender[, state_num] 
+arizona_other_r <- other_votes_race[, state_num]  
+arizona_other_a <- other_votes_age[, state_num]  
+
+other_arizona <- data.frame(
+  Votes = c(arizona_other_g, arizona_other_r,arizona_other_a),
+  Method = rep(c("Gender", "Race", "Age"), each = length(arizona_other_g))
+)
+
+plot_other <- ggplot(other_arizona, aes(x = Votes, fill = Method)) +
+  geom_density(alpha = 0.4) +
+  labs(title = "Other Votes, Arizona",
+       x = "Number of Votes (millions)",
+       y = "Density") +
+  scale_fill_manual(values = c("#E7E7E7", "#A4A4A4","#4C4C4C")) +
+  theme_minimal()
+
+
+
+
+
+
+ggarrange(plot_biden, plot_trump, plot_rfk, plot_other, ncol = 2, nrow = 2)
+
+
+
+```
+#### Michigan
+
+
+```{r}
+
+
+state_num <- 3
+
+arizona_biden_g <- biden_votes_gender[, state_num] 
+arizona_biden_r <- biden_votes_race[, state_num]  
+arizona_biden_a <- biden_votes_age[, state_num]  
+
+biden_arizona <- data.frame(
+  Votes = c(arizona_biden_g, arizona_biden_r,arizona_biden_a),
+  Method = rep(c("Gender", "Race", "Age"), each = length(arizona_biden_g))
+)
+
+plot_biden <- ggplot(biden_arizona, aes(x = Votes, fill = Method)) +
+  geom_density(alpha = 0.4) +
+  labs(title = "Biden Votes, Michigan",
+       x = "Number of Votes (millions)",
+       y = "Density") +
+  scale_fill_manual(values = c("#A9D3FF", "#459FFF","#003E81")) +
+  theme_minimal()
+
+
+
+
+
+
+arizona_trump_g <- trump_votes_gender[, state_num] 
+arizona_trump_r <- trump_votes_race[, state_num]  
+arizona_trump_a <- trump_votes_age[, state_num]  
+
+trump_arizona <- data.frame(
+  Votes = c(arizona_trump_g, arizona_trump_r,arizona_trump_a),
+  Method = rep(c("Gender", "Race", "Age"), each = length(arizona_trump_g))
+)
+
+plot_trump <- ggplot(trump_arizona, aes(x = Votes, fill = Method)) +
+  geom_density(alpha = 0.4) +
+  labs(title = "Trump Votes, Michigan",
+       x = "Number of Votes (millions)",
+       y = "Density") +
+  scale_fill_manual(values = c("#FFABB7", "#FF3250","#7E0013")) +
+  theme_minimal()
+
+
+
+arizona_rfk_g <- rfk_votes_gender[, state_num] 
+arizona_rfk_r <- rfk_votes_race[, state_num]  
+arizona_rfk_a <- rfk_votes_age[, state_num]  
+
+rfk_arizona <- data.frame(
+  Votes = c(arizona_rfk_g, arizona_rfk_r,arizona_rfk_a),
+  Method = rep(c("Gender", "Race", "Age"), each = length(arizona_rfk_g))
+)
+
+plot_rfk <- ggplot(rfk_arizona, aes(x = Votes, fill = Method)) +
+  geom_density(alpha = 0.4) +
+  labs(title = "RFK Votes, Michigan",
+       x = "Number of Votes (millions)",
+       y = "Density") +
+  scale_fill_manual(values = c("#FDFF74", "#FFE828","#DE9503")) +
+  theme_minimal()
+
+
+
+
+arizona_other_g <- other_votes_gender[, state_num] 
+arizona_other_r <- other_votes_race[, state_num]  
+arizona_other_a <- other_votes_age[, state_num]  
+
+other_arizona <- data.frame(
+  Votes = c(arizona_other_g, arizona_other_r,arizona_other_a),
+  Method = rep(c("Gender", "Race", "Age"), each = length(arizona_other_g))
+)
+
+plot_other <- ggplot(other_arizona, aes(x = Votes, fill = Method)) +
+  geom_density(alpha = 0.4) +
+  labs(title = "Other Votes, Michigan",
+       x = "Number of Votes (millions)",
+       y = "Density") +
+  scale_fill_manual(values = c("#E7E7E7", "#A4A4A4","#4C4C4C")) +
+  theme_minimal()
+
+
+
+
+
+
+ggarrange(plot_biden, plot_trump, plot_rfk, plot_other, ncol = 2, nrow = 2)
+
+```
+
+
+## Bayesian Model Averaging
+
+
+
+
+
+```{r}
+
+
+
+lb <- as.vector(rep(0, ncol(biden_votes_gender)))
+ub <- rep(10000000, ncol(biden_votes_gender))
+
+colnames(biden_votes_gender) <- c("AZ", "GE", "MI", "NV", "NC", "PN", "WI")
+names(lb) <- colnames(biden_votes_gender)
+names(ub) <- colnames(biden_votes_gender)
+
+
+library(bridgesampling)
+
+
+bridge_gender <- bridge_sampler(samples = stan(model_code = stan_model_g, data = stan_data_g, iter = 2000, chains = 4, control = list(max_treedepth = 15)))
+
+
+
+```
+
+
+```{r}
+
+bridge_race <- bridge_sampler(samples = stan(model_code = stan_model_r, data = stan_data_r, iter = 2000, chains = 4, control = list(max_treedepth = 15)))
+
+bridge_age <- bridge_sampler(samples = stan(model_code = stan_model_a, data = stan_data_a, iter = 2000, chains = 4, control = list(max_treedepth = 15)))
+
+
+```
+
+#Marginal Likelihood Calculation
+
+```{r}
+
+logmls <- c(bridge_gender$logml, bridge_race$logml, bridge_age$logml)
+
+
+
+mls <- c(exp(bridge_gender$logml), exp(bridge_race$logml), exp(bridge_age$logml))
+posterior_probs <- mls / sum(mls)
+
+
+biden_votes_bma <- (biden_votes_gender * posterior_probs[1] +
+                    biden_votes_race * posterior_probs[2] +
+                    biden_votes_age * posterior_probs[3])
+
+trump_votes_bma <- (trump_votes_gender * posterior_probs[1] +
+                    trump_votes_race * posterior_probs[2] +
+                    trump_votes_age * posterior_probs[3])
+
+rfk_votes_bma <- (rfk_votes_gender * posterior_probs[1] +
+                  rfk_votes_race * posterior_probs[2] +
+                  rfk_votes_age * posterior_probs[3])
+
+other_votes_bma <- (other_votes_gender * posterior_probs[1] +
+                    other_votes_race * posterior_probs[2] +
+                    other_votes_age * posterior_probs[3])
+
+posterior_probs
+
+```
+
+
+
+
+### Georgia BMA
+
+```{r}
+
+state_num <- 2
+
+arizona_biden_g <- biden_votes_gender[, state_num] 
+arizona_biden_r <- biden_votes_race[, state_num]  
+arizona_biden_a <- biden_votes_age[, state_num]
+arizona_biden_bma <- biden_votes_bma[, state_num]  
+
+
+biden_arizona <- data.frame(
+  Votes = c(arizona_biden_g, arizona_biden_r, arizona_biden_a, arizona_biden_bma),
+  Method = rep(c("Gender", "Race", "Age","Average"), each = length(arizona_biden_bma))
+)
+
+
+plot_biden <- ggplot(biden_arizona, aes(x = Votes, fill = Method)) +
+  geom_density(alpha = 0.4) +
+  labs(title = "Biden Votes, Georgia",
+       x = "Number of Votes (millions)",
+       y = "Density") +
+  scale_fill_manual(values = c("#A9D3FF", "#12FF3D","#459FFF","#003E81")) +
+  theme_minimal()
+
+
+
+
+
+
+arizona_trump_g <- trump_votes_gender[, state_num] 
+arizona_trump_r <- trump_votes_race[, state_num]  
+arizona_trump_a <- trump_votes_age[, state_num]
+arizona_trump_bma <- trump_votes_bma[, state_num]  
+
+
+trump_arizona <- data.frame(
+  Votes = c(arizona_trump_g, arizona_trump_r,arizona_trump_a,arizona_trump_bma),
+  Method = rep(c("Gender", "Race", "Age", "Average"), each = length(arizona_trump_bma))
+)
+
+plot_trump <- ggplot(trump_arizona, aes(x = Votes, fill = Method)) +
+  geom_density(alpha = 0.4) +
+  labs(title = "Trump Votes, Georgia",
+       x = "Number of Votes (millions)",
+       y = "Density") +
+  scale_fill_manual(values = c("#FFABB7", "#12FF3D","#FF3250","#7E0013")) +
+  theme_minimal()
+
+
+
+arizona_rfk_g <- rfk_votes_gender[, state_num] 
+arizona_rfk_r <- rfk_votes_race[, state_num]  
+arizona_rfk_a <- rfk_votes_age[, state_num]
+arizona_rfk_bma <- rfk_votes_bma[, state_num]  
+
+
+rfk_arizona <- data.frame(
+  Votes = c(arizona_rfk_g, arizona_rfk_r,arizona_rfk_a,arizona_rfk_bma),
+  Method = rep(c("Gender", "Race", "Age", "Average"), each = length(arizona_rfk_bma))
+)
+
+plot_rfk <- ggplot(rfk_arizona, aes(x = Votes, fill = Method)) +
+  geom_density(alpha = 0.4) +
+  labs(title = "RFK Votes, Georgia",
+       x = "Number of Votes (millions)",
+       y = "Density") +
+  scale_fill_manual(values = c("#FDFF74", "#12FF3D", "#FFE828","#DE9503")) +
+  theme_minimal()  
+
+
+
+
+arizona_other_g <- other_votes_gender[, state_num] 
+arizona_other_r <- other_votes_race[, state_num]  
+arizona_other_a <- other_votes_age[, state_num]
+arizona_other_bma <- other_votes_bma[, state_num]
+
+
+other_arizona <- data.frame(
+  Votes = c(arizona_other_g, arizona_other_r,arizona_other_a,arizona_other_bma),
+  Method = rep(c("Gender", "Race", "Age", "Average"), each = length(arizona_other_bma))
+)
+
+plot_other <- ggplot(other_arizona, aes(x = Votes, fill = Method)) +
+  geom_density(alpha = 0.4) +
+  labs(title = "Other Votes, Georgia",
+       x = "Number of Votes (millions)",
+       y = "Density") +
+  scale_fill_manual(values = c("#E7E7E7", "#12FF3D", "#A4A4A4","#4C4C4C")) +
+  theme_minimal()
+
+
+
+
+
+
+ggarrange(plot_biden, plot_trump, plot_rfk, plot_other, ncol = 2, nrow = 2)
+
+```
+
+
+
+
+### Wisconsin BMA
+
+
+```{r}
+
+
+state_num <- 7
+
+arizona_biden_g <- biden_votes_gender[, state_num] 
+arizona_biden_r <- biden_votes_race[, state_num]  
+arizona_biden_a <- biden_votes_age[, state_num]
+arizona_biden_bma <- biden_votes_bma[, state_num]  
+
+
+biden_arizona <- data.frame(
+  Votes = c(arizona_biden_g, arizona_biden_r, arizona_biden_a, arizona_biden_bma),
+  Method = rep(c("Gender", "Race", "Age","Average"), each = length(arizona_biden_bma))
+)
+
+plot_biden <- ggplot(biden_arizona, aes(x = Votes, fill = Method)) +
+  geom_density(alpha = 0.4) +
+  labs(title = "Biden Votes, Wisconsin",
+       x = "Number of Votes (millions)",
+       y = "Density") +
+  scale_fill_manual(values = c("#A9D3FF", "#12FF3D","#459FFF","#003E81")) +
+  theme_minimal()
+
+
+
+
+
+
+arizona_trump_g <- trump_votes_gender[, state_num] 
+arizona_trump_r <- trump_votes_race[, state_num]  
+arizona_trump_a <- trump_votes_age[, state_num]
+arizona_trump_bma <- trump_votes_bma[, state_num]  
+
+
+trump_arizona <- data.frame(
+  Votes = c(arizona_trump_g, arizona_trump_r,arizona_trump_a,arizona_trump_bma),
+  Method = rep(c("Gender", "Race", "Age", "Average"), each = length(arizona_trump_bma))
+)
+
+plot_trump <- ggplot(trump_arizona, aes(x = Votes, fill = Method)) +
+  geom_density(alpha = 0.4) +
+  labs(title = "Trump Votes, Wisconsin",
+       x = "Number of Votes (millions)",
+       y = "Density") +
+  scale_fill_manual(values = c("#FFABB7", "#12FF3D","#FF3250","#7E0013")) +
+  theme_minimal()
+
+
+
+arizona_rfk_g <- rfk_votes_gender[, state_num] 
+arizona_rfk_r <- rfk_votes_race[, state_num]  
+arizona_rfk_a <- rfk_votes_age[, state_num]
+arizona_rfk_bma <- rfk_votes_bma[, state_num]  
+
+
+rfk_arizona <- data.frame(
+  Votes = c(arizona_rfk_g, arizona_rfk_r,arizona_rfk_a,arizona_rfk_bma),
+  Method = rep(c("Gender", "Race", "Age", "Average"), each = length(arizona_rfk_bma))
+)
+
+plot_rfk <- ggplot(rfk_arizona, aes(x = Votes, fill = Method)) +
+  geom_density(alpha = 0.4) +
+  labs(title = "RFK Votes, Wisconsin",
+       x = "Number of Votes (millions)",
+       y = "Density") +
+  scale_fill_manual(values = c("#FDFF74", "#12FF3D", "#FFE828","#ECBA00")) +
+  theme_minimal() 
+
+
+
+
+arizona_other_g <- other_votes_gender[, state_num] 
+arizona_other_r <- other_votes_race[, state_num]  
+arizona_other_a <- other_votes_age[, state_num]
+arizona_other_bma <- other_votes_bma[, state_num]
+
+
+other_arizona <- data.frame(
+  Votes = c(arizona_other_g, arizona_other_r,arizona_other_a,arizona_rfk_bma),
+  Method = rep(c("Gender", "Race", "Age", "Average"), each = length(arizona_rfk_bma))
+)
+
+plot_other <- ggplot(other_arizona, aes(x = Votes, fill = Method)) +
+  geom_density(alpha = 0.4) +
+  labs(title = "Other Votes, Wisconsin",
+       x = "Number of Votes (millions)",
+       y = "Density") +
+  scale_fill_manual(values = c("#E7E7E7", "#12FF3D", "#A4A4A4","#4C4C4C")) +
+  theme_minimal()
+
+
+
+
+
+
+ggarrange(plot_biden, plot_trump, plot_rfk, plot_other, ncol = 2, nrow = 2)
+
+
+```
+
+# Comparing Credible Intervals
+
+```{r}
+
+calculate_credible_intervals <- function(votes) {
+  lower <- round(quantile(votes, probs = 0.05), 2)
+  upper <- round(quantile(votes, probs = 0.95), 2)
+  return(paste0("[", lower, ",", upper, "]"))
+}
+
+cred_intervals <- data.frame(
+  Model = c("Gender", "Race", "Age", "BMA"),
+  Biden = I(list(
+    calculate_credible_intervals(arizona_biden_g),
+    calculate_credible_intervals(arizona_biden_r),
+    calculate_credible_intervals(arizona_biden_a),
+    calculate_credible_intervals(arizona_biden_bma)
+  )),
+  Trump = I(list(
+    calculate_credible_intervals(arizona_trump_g),
+    calculate_credible_intervals(arizona_trump_r),
+    calculate_credible_intervals(arizona_trump_a),
+    calculate_credible_intervals(arizona_trump_bma)
+  )),
+  RFK = I(list(
+    calculate_credible_intervals(arizona_rfk_g),
+    calculate_credible_intervals(arizona_rfk_r),
+    calculate_credible_intervals(arizona_rfk_a),
+    calculate_credible_intervals(arizona_rfk_bma)
+  )),
+  Other = I(list(
+    calculate_credible_intervals(arizona_other_g),
+    calculate_credible_intervals(arizona_other_r),
+    calculate_credible_intervals(arizona_other_a),
+    calculate_credible_intervals(arizona_other_bma)
+  ))
+)
+
+print(cred_intervals)
+```
+
+
+
+
+## BMA by State
+
+
+```{r}
+
+#arizona 
+state <- 1
+
+arizona_biden_votes <- biden_votes_bma[, state]  
+arizona_trump_votes <- trump_votes_bma[, state]
+arizona_rfk_votes <- rfk_votes_bma[, state]
+arizona_other_votes <- other_votes_bma[, state]
+
+
+vote_data <- data.frame(
+  Votes = c(arizona_biden_votes, arizona_trump_votes,arizona_rfk_votes, arizona_other_votes),
+  Candidate = rep(c("J. Biden", "D. Trump", "RFK", "Other"), each = length(arizona_biden_votes))
+)
+
+az_bma <- ggplot(vote_data, aes(x = Votes, fill = Candidate)) +
+  geom_density(alpha = 0.4) +
+  labs(title = "Arizona",
+       x = "Votes",
+       y='') +
+  scale_fill_manual(values = c("red", "blue","gray", "orange")) +
+  theme_minimal()
+
+
+#georgia 
+state <- 2
+
+arizona_biden_votes <- biden_votes_bma[, state]  
+arizona_trump_votes <- trump_votes_bma[, state]
+arizona_rfk_votes <- rfk_votes_bma[, state]
+arizona_other_votes <- other_votes_bma[, state]
+
+
+vote_data <- data.frame(
+  Votes = c(arizona_biden_votes, arizona_trump_votes,arizona_rfk_votes, arizona_other_votes),
+  Candidate = rep(c("J. Biden", "D. Trump", "RFK", "Other"), each = length(arizona_biden_votes))
+)
+
+ge_bma <- ggplot(vote_data, aes(x = Votes, fill = Candidate)) +
+  geom_density(alpha = 0.4) +
+  labs(title = "Georgia",
+       x = "Votes",
+       y='') +
+  scale_fill_manual(values = c("red", "blue","gray", "orange")) +
+  theme_minimal()
+
+#michigan 
+state <- 3
+
+arizona_biden_votes <- biden_votes_bma[, state]  
+arizona_trump_votes <- trump_votes_bma[, state]
+arizona_rfk_votes <- rfk_votes_bma[, state]
+arizona_other_votes <- other_votes_bma[, state]
+
+
+vote_data <- data.frame(
+  Votes = c(arizona_biden_votes, arizona_trump_votes,arizona_rfk_votes, arizona_other_votes),
+  Candidate = rep(c("J. Biden", "D. Trump", "RFK", "Other"), each = length(arizona_biden_votes))
+)
+
+mi_bma <- ggplot(vote_data, aes(x = Votes, fill = Candidate)) +
+  geom_density(alpha = 0.4) +
+  labs(title = "Michigan",
+       x = "Votes",
+       y='') +
+  scale_fill_manual(values = c("red", "blue","gray", "orange")) +
+  theme_minimal()
+
+
+#nevada 
+state <- 4
+
+arizona_biden_votes <- biden_votes_bma[, state]  
+arizona_trump_votes <- trump_votes_bma[, state]
+arizona_rfk_votes <- rfk_votes_bma[, state]
+arizona_other_votes <- other_votes_bma[, state]
+
+
+vote_data <- data.frame(
+  Votes = c(arizona_biden_votes, arizona_trump_votes,arizona_rfk_votes, arizona_other_votes),
+  Candidate = rep(c("J. Biden", "D. Trump", "RFK", "Other"), each = length(arizona_biden_votes))
+)
+
+ne_bma <- ggplot(vote_data, aes(x = Votes, fill = Candidate)) +
+  geom_density(alpha = 0.4) +
+  labs(title = "Nevada",
+       x = "Votes",
+       y='') +
+  scale_fill_manual(values = c("red", "blue","gray", "orange")) +
+  theme_minimal()
+
+
+#Nevada
+state <- 5
+
+arizona_biden_votes <- biden_votes_bma[, state]  
+arizona_trump_votes <- trump_votes_bma[, state]
+arizona_rfk_votes <- rfk_votes_bma[, state]
+arizona_other_votes <- other_votes_bma[, state]
+
+
+vote_data <- data.frame(
+  Votes = c(arizona_biden_votes, arizona_trump_votes,arizona_rfk_votes, arizona_other_votes),
+  Candidate = rep(c("J. Biden", "D. Trump", "RFK", "Other"), each = length(arizona_biden_votes))
+)
+
+ne_bma <- ggplot(vote_data, aes(x = Votes, fill = Candidate)) +
+  geom_density(alpha = 0.4) +
+  labs(title = "Nevada",
+       x = "Votes",
+       y='') +
+  scale_fill_manual(values = c("red", "blue","gray", "orange")) +
+  theme_minimal()
+
+
+#N. Carolina 
+state <- 5
+
+arizona_biden_votes <- biden_votes_bma[, state]  
+arizona_trump_votes <- trump_votes_bma[, state]
+arizona_rfk_votes <- rfk_votes_bma[, state]
+arizona_other_votes <- other_votes_bma[, state]
+
+
+vote_data <- data.frame(
+  Votes = c(arizona_biden_votes, arizona_trump_votes,arizona_rfk_votes, arizona_other_votes),
+  Candidate = rep(c("J. Biden", "D. Trump", "RFK", "Other"), each = length(arizona_biden_votes))
+)
+
+nc_bma <- ggplot(vote_data, aes(x = Votes, fill = Candidate)) +
+  geom_density(alpha = 0.4) +
+  labs(title = "N. Carolina",
+       x = "Votes",
+       y='') +
+  scale_fill_manual(values = c("red", "blue","gray", "orange")) +
+  theme_minimal()
+
+
+
+#Pennsylvania 
+state <- 6
+
+arizona_biden_votes <- biden_votes_bma[, state]  
+arizona_trump_votes <- trump_votes_bma[, state]
+arizona_rfk_votes <- rfk_votes_bma[, state]
+arizona_other_votes <- other_votes_bma[, state]
+
+
+vote_data <- data.frame(
+  Votes = c(arizona_biden_votes, arizona_trump_votes,arizona_rfk_votes, arizona_other_votes),
+  Candidate = rep(c("J. Biden", "D. Trump", "RFK", "Other"), each = length(arizona_biden_votes))
+)
+
+pe_bma <- ggplot(vote_data, aes(x = Votes, fill = Candidate)) +
+  geom_density(alpha = 0.4) +
+  labs(title = "Pennsylvania",
+       x = "Votes",
+       y='') +
+  scale_fill_manual(values = c("red", "blue","gray", "orange")) +
+  theme_minimal()
+
+
+#Wisconsin 
+state <- 7
+
+arizona_biden_votes <- biden_votes_bma[, state]  
+arizona_trump_votes <- trump_votes_bma[, state]
+arizona_rfk_votes <- rfk_votes_bma[, state]
+arizona_other_votes <- other_votes_bma[, state]
+
+
+vote_data <- data.frame(
+  Votes = c(arizona_biden_votes, arizona_trump_votes,arizona_rfk_votes, arizona_other_votes),
+  Candidate = rep(c("J. Biden", "D. Trump", "RFK", "Other"), each = length(arizona_biden_votes))
+)
+
+wi_bma <- ggplot(vote_data, aes(x = Votes, fill = Candidate)) +
+  geom_density(alpha = 0.4) +
+  labs(title = "Wisconsin",
+       x = "Votes",
+       y='') +
+  scale_fill_manual(values = c("red", "blue","gray", "orange")) +
+  theme_minimal()
+
+az_bma <- az_bma + theme(legend.position = "none")
+ge_bma <- ge_bma + theme(legend.position = "none")
+mi_bma <- mi_bma + theme(legend.position = "none")
+ne_bma <- ne_bma + theme(legend.position = "none")
+nc_bma <- nc_bma + theme(legend.position = "none")
+pe_bma <- pe_bma + theme(legend.position = "none")
+wi_bma <- wi_bma + theme(legend.position = "none")
+
+
+
+le_bma <- ggplot(vote_data, aes(x = Votes, fill = Candidate)) +
+  geom_density(alpha = 0.4) +
+  labs(title = "Wisconsin",
+       x = "Votes",
+       y='') +
+  scale_fill_manual(values = c("red", "blue","gray", "orange")) 
+
+
+
+img <- png::readPNG("C:\\Users\\Sam\\Downloads\\legend_Gg.png")
+aspect_ratio <- dim(img)[2] / dim(img)[1]
+grob <- grid::rasterGrob(img, interpolate = TRUE, 
+                   width = unit(0.7* aspect_ratio, "npc"), 
+                   height = unit(0.6 , "npc"))
+
+image_plot <- ggplot() +
+  annotation_custom(
+    grob
+  ) +
+  theme_void()
+
+
+
+
+ggarrange(
+  az_bma, ge_bma, mi_bma, ne_bma,
+  nc_bma, pe_bma, wi_bma, image_plot,
+  ncol = 4, nrow = 2, 
+  widths = c(1, 1, 1, 1),
+  heights = c(1, 1)
+)
+
+
+
+
+```
+
+
+
+
+```{r}
+scale_factor <- 0.2
+
+ggplot() +
+  annotation_custom(
+    grob, 
+    xmin = -0.1, xmax = 0.1,
+    ymin = -0.5, ymax = 0.5
+  ) +
+  theme_void()
+```
+
+
+# Electoral College Results
+
+
+
+
+## Comparing State winners
+
+```{r}
+
+
+state_names <- c("Arizona", "Georgia", "Michigan","North Carolina", "Nevada", "Pennsylvania", "Wisconsin")
+
+win_percentages <- data.frame(State = state_names, Biden = numeric(length(state_names)), Trump = numeric(length(state_names)))
+
+
+for (i in 1:length(state_names)) {
+  # Biden wins
+  biden_wins <- sum(biden_votes_bma[, i] > trump_votes_bma[, i])
+  biden_win_percentage <- biden_wins / nrow(biden_votes_bma) * 100
+  
+  # Trump wins
+  trump_wins <- sum(trump_votes_bma[, i] > biden_votes_bma[, i])
+  trump_win_percentage <- trump_wins / nrow(trump_votes_bma) * 100
+  
+  # Store in data frame
+  win_percentages$Biden[i] <- biden_win_percentage
+  win_percentages$Trump[i] <- trump_win_percentage
+}
+
+win_percentages
+
+
+
+```
+
+
+
+
+```{r}
+
+
+
+electoral_college_results <- as.data.frame(matrix(0, nrow = 8000, ncol = 4))
+
+
+colnames(electoral_college_results) <- c("Biden", "Trump", 'Other', "RFK")
+
+electoral_college_results[, "Biden"] <- 229
+electoral_college_results[, "Trump"] <- 216
+
+electoral_votes <- c(11, 16, 15, 6, 16, 19, 10)
+
+
+for (i in 1:8000) {
+
+  state_winner <- max.col(cbind(biden_votes_bma[i, ], trump_votes_bma[i, ], rfk_votes_bma[i, ]))
+  
+  biden_electoral <- sum(electoral_votes[state_winner == 1])
+  trump_electoral <- sum(electoral_votes[state_winner == 2])
+  rfk_electoral <- sum(electoral_votes[state_winner == 3])
+  
+  electoral_college_results[i, "Biden"] = electoral_college_results[i, "Biden"]+ biden_electoral
+  electoral_college_results[i, "Trump"] = electoral_college_results[i, "Trump"] + trump_electoral
+  electoral_college_results[i, "RFK"] = electoral_college_results[i, "RFK"] + rfk_electoral
+}
+
+
+election_wins <- colSums(electoral_college_results >= 270)
+
+electoral_wins <- apply(electoral_college_results, 2, function(x) sum(x >= 270))
+electoral_win_percentages <- electoral_wins/40
+
+
+
+library(tidyverse)
+
+electoral_df <- as.data.frame(electoral_college_results)
+names(electoral_df) <- c("Biden", "Trump", "RFK")
+
+electoral_df <- electoral_df[1:2]
+
+electoral_long <- electoral_df %>%
+  rowid_to_column("iteration") %>%
+  pivot_longer(cols = -iteration, names_to = "Candidate", values_to = "ElectoralVotes")
+
+ggplot(electoral_long, aes(x = ElectoralVotes, fill = Candidate)) +
+  geom_density(alpha = 0.4) +
+  labs(title = "Simulated 2024 US Presidential Election Electoral College Results",
+       x = "Electoral College Votes",
+       y = "Density") +
+  scale_fill_manual(values = c("blue", "red")) +
+  theme_minimal()
+
+
+election_wins
+
+```
+
