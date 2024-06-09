@@ -85,11 +85,11 @@ $V_{sk} = \sum_{d \in D} \phi_{sd} \cdot \theta_{sdk} \cdot p_{sd}$
 
 ### Bayesian Model Averaging
 
-For predicting a quantity of votes $\delta$ given some data $D$, the posterior of the BMA model is computed by the following:
+For predicting a quantity of votes $V_k$ given some data $D$, the posterior of the BMA model is computed by the following:
 
-$\text{pr}(\delta \mid D) = \sum_{i \in I} \text{pr}(\delta \mid M_i, D) \text{pr}(M_i \mid D)$
+$\text{pr}(V_k \mid D) = \sum_{i \in I} \text{pr}(V_k \mid M_i, D) \text{pr}(M_i \mid D)$
 
-where $\text{pr}(\delta \mid M_i, D)$ is the probability of each stratified model $M_i$, multiplied by its marginal likelihood $\text{pr}(M_i \mid D)$. 
+where $\text{pr}(V_k \mid M_i, D)$ is the probability of each stratified model $M_i$, multiplied by its marginal likelihood $\text{pr}(M_i \mid D)$. 
 
 ## Contact
 
