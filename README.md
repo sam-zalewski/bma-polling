@@ -27,7 +27,7 @@ Using historical census data for voter turnout and recent polls surveying the 20
 
 $$ V_{sk} = \sum_{d \in D} \phi_{sd} \cdot \theta_{sdk} \cdot p_{sd}$$
 
-Where $\phi_{sd}$ is the turnout rate for demographic $d$ in state $s$, and $\theta_{sd}$ is the proportion of demographic $d$ in state $s$ voting for candidate $k$. With this formulation, I created three different models which stratified by different demographic groups to reduce bias in their estimations: by gender, race, and age groups. I strongly recommened reading section 2 of the report for a more detailed description of assumptions and prior distributions for each of the model parameters.
+Where $\phi_{sd}$ is the turnout rate for demographic $d$ in state $s$, and $\theta_{sd}$ is the proportion of demographic $d$ in state $s$ voting for candidate $k$. With this formulation, I created three different models which stratified by different demographic groups to reduce bias in their estimations: by gender, race, and age groups.
 
 Using MCMC sampling, the posterior distributions for each of these models are calculated. Here are the three models compared for four different voting options in Arizona:
 
@@ -54,6 +54,42 @@ Which then could be translated into 90% credible intervals for each state. Here 
 
 In each instance, my BMA model was able to create estimations with a narrower 90% credible interval than from any of the single-demographic stratified models. In my paper, I take these BMA posterior distributions further, incorporating of the electoral college in the MCMC sampling process to create interpretations of the final 2024 election outcome.
 
+## Model Details
+
+### 
+
+Total Votes in State $s$ for Candidate $k$: 
+
+$V_{sk} = \sum_{d \in D} \phi_{sd} \cdot \theta_{sdk} \cdot p_{sd}$
+
+
+### Model Components
+
+
+ Voting intentions: $\theta_{sdk} \sim \text{Dirichlet}(\alpha_{sd}) \quad \forall s \in S, d \in D$
+ 
+ Alpha parameters: $\alpha_{sd} = (\alpha_{1sd}, \ldots, \alpha_{Ksd}) \quad \forall s \in S, d \in D$
+ 
+ Logit of turnout: $\quad \psi_{sd} = \text{logit}(\beta + \gamma_s + \delta_d) \quad \forall s \in S, d \in D$
+ 
+ Adjusted turnout mean: $\quad \mu_{sd} = \text{inv logit}(\psi_{sd}) \quad \forall s \in S, d \in D$
+ 
+ Adjusted turnout: $\quad \phi_{sd} = \text{Normal}(\mu_{sd},0.1) \quad \forall s \in S, d \in D$
+
+### Priors
+ Demographic effect: $\quad \delta_d \sim \text{Normal}(0, 1) \quad \forall  d \in D$
+ 
+ State effect: $\quad \gamma_s \sim \text{Normal}(0, 1) \quad \forall s \in S$
+ 
+ 2024 turnout rate: $\quad \beta \sim \text{Beta}(100, 65)$
+
+### Bayesian Model Averaging
+
+For predicting a quantity of votes $\delta$ given some data $D$, the posterior of the BMA model is computed by the following:
+
+$\text{pr}(\delta \mid D) = \sum_{i \in I} \text{pr}(\delta \mid M_i, D) \text{pr}(M_i \mid D)$
+
+where $\text{pr}(\delta \mid M_i, D)$ is the probability of each stratified model $M_i$, multiplied by its marginal likelihood $\text{pr}(M_i \mid D)$. 
 
 ## Contact
 
