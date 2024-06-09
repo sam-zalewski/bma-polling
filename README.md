@@ -55,7 +55,10 @@ Which then could be translated into 90% credible intervals for each state. Here 
 In each instance, my BMA model was able to create estimations with a narrower 90% credible interval than from any of the single-demographic stratified models. In my paper, I take these BMA posterior distributions further, incorporating of the electoral college in the MCMC sampling process to create interpretations of the final 2024 election outcome.
 
 
+## Contact
 
+Sam Zalewski - samzalewski@yahoo.com
+Project Link - [https://github.com/detective-sticks/bma-polling]([./Zalewski_Bayesian_Polling.pdf](https://github.com/detective-sticks/bma-polling))
 
 
 
