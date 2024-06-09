@@ -1,6 +1,6 @@
 # A Bayesian Approach for Combining Stratified Election Polls
 
-This repository contains the explanation and application of a Bayesian statistical method I developed to interpret the results of demographic-stratified election polls. I mainly wanted to make my report easily accessible in pdf form, but I also thought it would be useful to upload support for my text by including the entire script used to generate my analysis, along with the formatted data I used as input. 
+This repository contains the explanation and application of a Bayesian statistical method I developed to interpret the results of demographic-stratified election polls. The main format of my project is the attached pdf, but I thought it would be useful to upload support for the paper by including the script used to generate my analysis, along with the formatted data I used as input. 
 
 ### Contents
 
@@ -19,7 +19,7 @@ The full report is available as [Zalewski_Bayesian_Polling.pdf](./Zalewski_Bayes
 5. Results
 6. Discussion
 
-If you'd like to see the exact code used to generate these results, including the STAN model, the file [zalewski_bma_polling.Rmd](./zalewski_bma_polling.Rmd) contains the entire script used for the analysis. Although the sections are clearly marked, annotations are sparse as they assume familiarity with what the purpose of the script as explained throughout the paper. The [data](./data) folder contains all the necessary files necessary to run the script, and these files should be placed in the directory of the markdown file when executed.
+If you'd like to see the exact code used alongside the paper, including the STAN model, the file [zalewski_bma_polling.Rmd](./zalewski_bma_polling.Rmd) contains the entire script used in the analysis. Although the sections are clearly marked, annotations are sparse as they assume familiarity with what the purpose of the script as explained throughout the paper. The [data](./data) folder contains all the necessary files necessary to run the script, and these files should be placed in the directory of the markdown file when executed.
 
 ## Methodology Summary
 
