@@ -58,7 +58,7 @@ In each instance, my BMA model was able to create estimations with a narrower 90
 ## Contact
 
 Sam Zalewski - samzalewski@yahoo.com
-Project Link - [https://github.com/detective-sticks/bma-polling]([./Zalewski_Bayesian_Polling.pdf](https://github.com/detective-sticks/bma-polling))
+Project Link - [https://github.com/sam-zalewski/bma-polling]([./Zalewski_Bayesian_Polling.pdf](https://github.com/sam-zalewski/bma-polling))
 
 
 
