@@ -1,6 +1,6 @@
 # A Bayesian Approach for Combining Stratified Election Polls
 
-This repository contains the explanation and application of a Bayesian statistical method I developed to interpret the results of demographic-stratified election polls. The main format of my project is the attached pdf, but I thought it would be useful to upload support for the paper by including the script used to generate my analysis, along with the formatted data I used as input. 
+This repository contains the explanation and application of a Bayesian statistical method I developed to interpret the results of Morning Consult's demographic-stratified election polls. The main format of my project is the attached pdf, but I thought it would be useful to upload support for the paper by including the script used to generate my analysis, along with the formatted data I used as input. 
 
 ### Contents
 
